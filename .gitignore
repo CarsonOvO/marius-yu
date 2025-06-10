@@ -31,6 +31,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+datasets/
 docs_build/
 docs_html/
 develop-eggs/
@@ -171,5 +172,3 @@ Thumbs.db
 
 
 # End of https://www.toptal.com/developers/gitignore/api/python
-
-./datasets/
