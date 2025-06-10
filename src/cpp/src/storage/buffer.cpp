@@ -323,6 +323,10 @@ void AsyncWriteBlock::async_write(std::vector<Partition *> partitions) {
 
 PartitionBuffer::PartitionBuffer(int capacity, int num_partitions, int fine_to_coarse_ratio, int64_t partition_size, int embedding_size,
                                  int64_t total_embeddings, torch::Dtype dtype, string filename, bool prefetching) {
+    
+    // 초기화 시작 로그
+    SPDLOG_DEBUG("PartitionBuffer constructor called with filename: {}, num_partitions: {}, capacity: {}", filename, num_partitions, capacity);
+
     capacity_ = capacity;
     size_ = 0;
     num_partitions_ = num_partitions;
@@ -337,6 +341,12 @@ PartitionBuffer::PartitionBuffer(int capacity, int num_partitions, int fine_to_c
 
     prefetching_ = prefetching;
 
+
+    // 파티션 테이블 생성 전 상태 로그
+    SPDLOG_DEBUG("Initializing partition_table_ with total_embeddings: {}, embedding_size: {}, dtype_size: {}", 
+                 total_embeddings_, embedding_size_, dtype_size_);
+
+
     int64_t curr_idx_offset = 0;
     int64_t curr_file_offset = 0;
     int64_t curr_partition_size = partition_size_;
@@ -348,17 +358,37 @@ PartitionBuffer::PartitionBuffer(int capacity, int num_partitions, int fine_to_c
             curr_total_size = curr_partition_size * embedding_size_ * dtype_size_;
         }
 
+        SPDLOG_DEBUG("Creating partition {}: size: {}, idx_offset: {}, file_offset: {}", 
+            i, curr_partition_size, curr_idx_offset, curr_file_offset);
+
         Partition *curr_part = new Partition(i, curr_partition_size, embedding_size_, dtype_, curr_idx_offset, curr_file_offset);
         partition_table_.push_back(curr_part);
 
         curr_file_offset += curr_total_size;
         curr_idx_offset += curr_partition_size;
     }
-
+    // 파티션 테이블 생성 후 상태 로그
+    SPDLOG_DEBUG("partition_table_ size: {}", partition_table_.size());
     filename_ = filename;
-    partitioned_file_ = new PartitionedFile(filename_, num_partitions_, partition_size_, embedding_size_, total_embeddings_, dtype_);
 
+    // PartitionedFile 초기화 전 로그
+    SPDLOG_DEBUG("Creating PartitionedFile with filename: {}, num_partitions: {}, partition_size: {}, total_embeddings: {}", 
+        filename_, num_partitions_, partition_size_, total_embeddings_);
+
+    partitioned_file_ = new PartitionedFile(filename_, num_partitions_, partition_size_, embedding_size_, total_embeddings_, dtype_);
+    
+
+    // PartitionedFile 생성 후 확인
+    if (partitioned_file_ == nullptr) {
+        SPDLOG_ERROR("Failed to create PartitionedFile for filename: {}", filename_);
+    } else {
+        SPDLOG_DEBUG("PartitionedFile created successfully for filename: {}", filename_);
+    }
+    
     loaded_ = false;
+
+    // 생성자 종료 로그
+    SPDLOG_DEBUG("PartitionBuffer initialization complete");
 }
 
 PartitionBuffer::~PartitionBuffer() {
@@ -439,6 +469,11 @@ torch::Tensor PartitionBuffer::getBufferState() { return buffer_state_; }
 
 // indices a relative to the local node ids
 torch::Tensor PartitionBuffer::indexRead(torch::Tensor indices) {
+    SPDLOG_INFO("PartitionBuffer::indexRead called with indices size: {}", indices.size(0));
+    SPDLOG_INFO(">> buffer_tensor_view_ rows: {}", buffer_tensor_view_.size(0));
+    SPDLOG_INFO(">> indices min: {}, max: {}",
+            indices.min().item<int64_t>(), indices.max().item<int64_t>());
+
     if (indices.sizes().size() != 1) {
         // TODO: throw invalid input to func exception
         throw std::runtime_error("");
@@ -451,7 +486,7 @@ torch::Tensor PartitionBuffer::indexRead(torch::Tensor indices) {
     torch::Tensor out = torch::empty({indices.size(0), buffer_tensor_view_.size(1)}, out_options);
     torch::index_select_out(out, buffer_tensor_view_, 0, indices);
 
-    return out;
+    return out; 
 }
 
 Indices PartitionBuffer::getRandomIds(int64_t size) { return torch::randint(in_buffer_ids_.size(0), size, torch::kInt64); }

@@ -9,6 +9,23 @@
 
 #include "data/ordering.h"
 #include "reporting/logger.h"
+#include <torch/script.h>
+#include <set>
+#include <experimental/filesystem>
+namespace fs = std::experimental::filesystem;
+
+torch::Tensor make_unique(torch::Tensor input) {
+    input = input.to(torch::kCPU);
+    int64_t* data = input.data_ptr<int64_t>();
+    int64_t size = input.size(0);
+
+    std::set<int64_t> unique_set(data, data + size);
+    std::vector<int64_t> unique_vec(unique_set.begin(), unique_set.end());
+
+    torch::Tensor result = torch::from_blob(unique_vec.data(), {static_cast<int64_t>(unique_vec.size())}, torch::kInt64).clone();
+    return result;
+}
+
 
 GraphModelStorage::GraphModelStorage(GraphModelStoragePtrs storage_ptrs, shared_ptr<StorageConfig> storage_config) {
     storage_ptrs_ = storage_ptrs;
@@ -28,27 +45,30 @@ GraphModelStorage::GraphModelStorage(GraphModelStoragePtrs storage_ptrs, shared_
     num_nodes_ = storage_config->dataset->num_nodes;
     num_edges_ = storage_config->dataset->num_edges;
 
-    if (full_graph_evaluation_) {
-        if (storage_ptrs_.node_embeddings != nullptr) {
-            if (instance_of<Storage, PartitionBufferStorage>(storage_ptrs_.node_embeddings)) {
-                string node_embedding_filename = storage_config->model_dir + PathConstants::embeddings_file + PathConstants::file_ext;
+    if (storage_ptrs_.node_features != nullptr &&
+        instance_of<Storage, PartitionBufferStorage>(storage_ptrs_.node_features)) {
 
-                in_memory_embeddings_ =
-                    std::make_shared<InMemory>(node_embedding_filename, storage_ptrs_.node_embeddings->dim0_size_, storage_ptrs_.node_embeddings->dim1_size_,
-                                               storage_ptrs_.node_embeddings->dtype_, torch::kCPU);
-            }
-        }
+        string node_feature_filename =
+            storage_config->dataset->dataset_dir +
+            PathConstants::nodes_directory +
+            PathConstants::features_file +
+            PathConstants::file_ext;
 
-        if (storage_ptrs_.node_features != nullptr) {
-            if (instance_of<Storage, PartitionBufferStorage>(storage_ptrs_.node_features)) {
-                string node_feature_filename =
-                    storage_config->dataset->dataset_dir + PathConstants::nodes_directory + PathConstants::features_file + PathConstants::file_ext;
+        SPDLOG_INFO(">>> Forcing in_memory_features_ init: {}", node_feature_filename);
 
-                in_memory_features_ = std::make_shared<InMemory>(node_feature_filename, storage_ptrs_.node_features->dim0_size_,
-                                                                 storage_ptrs_.node_features->dim1_size_, storage_ptrs_.node_features->dtype_, torch::kCPU);
-            }
-        }
+        in_memory_features_ = std::make_shared<InMemory>(
+            node_feature_filename,
+            storage_ptrs_.node_features->dim0_size_,
+            storage_ptrs_.node_features->dim1_size_,
+            storage_ptrs_.node_features->dtype_,
+            torch::kCPU
+        );
+
+        storage_ptrs_.node_features = in_memory_features_;
+
+        SPDLOG_INFO(">>> Replaced storage_ptrs_.node_features with in_memory_features_");
     }
+
 }
 
 GraphModelStorage::GraphModelStorage(GraphModelStoragePtrs storage_ptrs, bool prefetch) {
@@ -127,6 +147,60 @@ void GraphModelStorage::load() {
 
     _load(storage_ptrs_.node_labels);
     _load(storage_ptrs_.relation_features);
+
+    if (train_) {
+        std::string critical_nodes_path = "datasets/ogbn_arxiv/nodes/critical_nodes.bin";
+        std::ifstream infile(critical_nodes_path, std::ios::binary | std::ios::ate);
+        
+        if (infile.is_open()) {
+            std::streamsize size = infile.tellg();
+            infile.seekg(0, std::ios::beg);
+
+            int64_t num_elems = size / sizeof(int64_t);
+            std::vector<int64_t> buffer(num_elems);
+            if (infile.read(reinterpret_cast<char*>(buffer.data()), size)) {
+                torch::Tensor critical_nodes = torch::from_blob(buffer.data(), {num_elems}, torch::kInt64).clone();
+
+                torch::Tensor filtered = critical_nodes.masked_select((critical_nodes >= 0) & (critical_nodes < num_nodes_));
+                critical_nodes = make_unique(filtered);
+                critical_node_ids_ = critical_nodes.to(torch::kCUDA);
+
+                SPDLOG_INFO("After filtering, valid critical_nodes count: {}", critical_nodes.size(0));
+                SPDLOG_INFO("critical_nodes max: {}, total_nodes: {}", critical_nodes.max().item<int64_t>(), num_nodes_);
+
+                SPDLOG_INFO(">> Trying to fetch features...");
+                torch::Tensor feats = getNodeFeatures(critical_nodes);
+                SPDLOG_INFO(">> Got features, shape: [{}]", fmt::join(feats.sizes(), ", "));
+
+                if (!cached_critical_features_.defined()) {
+                    SPDLOG_INFO(">> Moving critical features to CUDA for the first time...");
+                    if (feats.defined() && feats.numel() > 0) {
+                        cached_critical_features_ = feats.to(torch::kCUDA);
+
+                        // auto sizes = cached_critical_features_.sizes(); // at::IntArrayRef
+                        // std::vector<int64_t> shape_vec(sizes.begin(), sizes.end());
+                        // SPDLOG_INFO(">> cached_critical_features_ shape: [{}]", fmt::join(shape_vec, ", "));
+
+                        SPDLOG_INFO(">> Critical features moved to GPU.");
+                        
+                        auto sizes_vec = std::vector<int64_t>(cached_critical_features_.sizes().begin(), cached_critical_features_.sizes().end());
+                        SPDLOG_INFO(">> cached_critical_features_ on device: {}", cached_critical_features_.device().str());
+                        SPDLOG_INFO(">> cached_critical_features_ shape: [{}]", fmt::join(sizes_vec, ", "));
+                    } else {
+                        SPDLOG_ERROR(">> Fetched features are empty! Aborting GPU move.");
+                    }
+                } else {
+                    SPDLOG_INFO(">> Using previously cached critical features on GPU.");
+                }
+
+            } else {
+                SPDLOG_ERROR("Failed to read content from {}", critical_nodes_path);
+            }
+            infile.close();
+        } else {
+            SPDLOG_WARN("Could not open critical_nodes.bin at {}", critical_nodes_path);
+        }
+    }
 }
 
 void GraphModelStorage::unload(bool write) {
@@ -244,21 +318,89 @@ torch::Tensor GraphModelStorage::getEncodedNodesRange(int64_t start, int64_t siz
 }
 
 torch::Tensor GraphModelStorage::getNodeFeatures(Indices indices) {
-    if (!train_ && instance_of<Storage, PartitionBufferStorage>(storage_ptrs_.node_features) && full_graph_evaluation_) {
-        if (in_memory_features_ != nullptr) {
-            return in_memory_features_->indexRead(indices);
+    int64_t feature_row_count = 0;
 
-        } else {
-            return torch::Tensor();
-        }
-    } else {
-        if (storage_ptrs_.node_features != nullptr) {
-            return storage_ptrs_.node_features->indexRead(indices);
-        } else {
-            return torch::Tensor();
-        }
+    if (in_memory_features_ != nullptr) {
+        feature_row_count = in_memory_features_->getDim0();
+    } else if (storage_ptrs_.node_features != nullptr) {
+        feature_row_count = storage_ptrs_.node_features->getDim0();
     }
+
+    auto valid_mask = indices < feature_row_count;
+    indices = indices.masked_select(valid_mask);
+
+    if (indices.numel() == 0) {
+        SPDLOG_WARN(">> Warning: No valid indices found, returning dummy feature tensor.");
+        return torch::empty({0, storage_ptrs_.node_features->dim1_size_}, torch::kFloat32);
+    }
+
+    // ===================== 1. Cache-based branch ===========================
+    if (cached_critical_features_.defined() && critical_node_ids_.defined()) {
+        // Create mask: which indices are critical
+        SPDLOG_INFO(">> [CACHE HIT] Using cached critical features on GPU.");
+        indices = indices.to(torch::kCUDA);
+
+        auto expanded = indices.unsqueeze(1); // [N, 1]
+        auto cmp = expanded.eq(critical_node_ids_); // [N, K]
+        auto is_critical_mask = cmp.any(1); // [N]
+        auto critical_indices = indices.masked_select(is_critical_mask); // [Nc]
+        auto non_critical_indices = indices.masked_select(~is_critical_mask); // [Nn]
+
+        auto critical_pos = torch::argmax(cmp.to(torch::kInt64), 1); // [N], position in critical_node_ids_
+        auto critical_pos_selected = critical_pos.masked_select(is_critical_mask); // [Nc]
+
+        torch::Tensor emb_critical;
+        if (critical_pos_selected.numel() > 0) {
+            emb_critical = cached_critical_features_.index_select(0, critical_pos_selected.to(torch::kCUDA));
+        } else {
+            emb_critical = torch::empty({0, cached_critical_features_.size(1)}).to(torch::kCUDA);
+        }
+
+        torch::Tensor emb_non_critical;
+        if (non_critical_indices.numel() == 0) {
+            emb_non_critical = torch::empty({0, cached_critical_features_.size(1)}).to(torch::kCPU);
+        } else if (in_memory_features_ != nullptr) {
+            emb_non_critical = in_memory_features_->indexRead(non_critical_indices.to(torch::kCPU));
+        } else if (storage_ptrs_.node_features != nullptr) {
+            emb_non_critical = storage_ptrs_.node_features->indexRead(non_critical_indices);
+        } else {
+            SPDLOG_WARN(">> No valid node_features found, returning empty");
+            return torch::Tensor();
+        }
+
+        // Combine two groups back to the original order
+        torch::Tensor full_features = torch::empty({indices.size(0), emb_critical.size(1)}, emb_critical.options());
+
+        int64_t i = 0, ci = 0, ni = 0;
+        for (int64_t j = 0; j < indices.size(0); ++j) {
+            if (is_critical_mask[j].item().toBool()) {
+                full_features[j] = emb_critical[ci++];
+            } else {
+                full_features[j] = emb_non_critical[ni++];
+            }
+        }
+
+        SPDLOG_INFO(">> [Cache] GPU cached hit: {} / {} ({:.2f}%)", ci, indices.size(0), 100.0 * ci / indices.size(0));
+        return full_features;
+    }
+
+    // ===================== 2. Fallback branch ===========================
+    if (indices.device().is_cuda()) {
+        indices = indices.to(torch::kCPU);
+    }
+
+    if (in_memory_features_ != nullptr) {
+        return in_memory_features_->indexRead(indices);
+    }
+
+    if (storage_ptrs_.node_features != nullptr) {
+        SPDLOG_INFO(">> Fallback to node_features");
+        return storage_ptrs_.node_features->indexRead(indices);
+    }
+
 }
+
+
 
 torch::Tensor GraphModelStorage::getNodeFeaturesRange(int64_t start, int64_t size) {
     if (storage_ptrs_.node_features != nullptr) {

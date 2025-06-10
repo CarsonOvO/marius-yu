@@ -1,63 +1,119 @@
 model:
   learning_task: NODE_CLASSIFICATION
   encoder:
+    use_incoming_nbrs: true
+    use_outgoing_nbrs: true
     train_neighbor_sampling:
-      - type: ALL
-      - type: ALL
-      - type: ALL
+      - type: UNIFORM
+        options:
+          max_neighbors: 15
+        use_hashmap_sets: true
+      - type: UNIFORM
+        options:
+          max_neighbors: 10
+      - type: UNIFORM
+        options:
+          max_neighbors: 5
+    eval_neighbor_sampling:
+      - type: UNIFORM
+        options:
+          max_neighbors: 15
+        use_hashmap_sets: true
+      - type: UNIFORM
+        options:
+          max_neighbors: 10
+      - type: UNIFORM
+        options:
+          max_neighbors: 5
     layers:
       - - type: FEATURE
           output_dim: 128
-          bias: true
+          bias: false
+          activation: NONE
       - - type: GNN
           options:
             type: GRAPH_SAGE
             aggregator: MEAN
+          init:
+            type: GLOROT_NORMAL
           input_dim: 128
           output_dim: 128
           bias: true
+          bias_init:
+            type: ZEROS
+          activation: RELU
       - - type: GNN
           options:
             type: GRAPH_SAGE
             aggregator: MEAN
+          init:
+            type: GLOROT_NORMAL
           input_dim: 128
           output_dim: 128
           bias: true
+          bias_init:
+            type: ZEROS
+          activation: RELU
       - - type: GNN
           options:
             type: GRAPH_SAGE
             aggregator: MEAN
+          init:
+            type: GLOROT_NORMAL
           input_dim: 128
           output_dim: 40
           bias: true
+          bias_init:
+            type: ZEROS
+          activation: NONE
   decoder:
     type: NODE
   loss:
     type: CROSS_ENTROPY
     options:
-      reduction: SUM
+      reduction: MEAN
   dense_optimizer:
     type: ADAM
     options:
-      learning_rate: 0.01
+      learning_rate: 0.003
 storage:
   device_type: cuda
-  dataset: 
-    dataset_dir: datasets/ogbn_arxiv_example/
+  dataset:
+    dataset_dir: datasets/arxiv_example
+    num_edges: 1166243
+    num_nodes: 169343
+    num_relations: 1
+    num_train: 90941
+    num_valid: 29799
+    num_test: 48603
+    feature_dim: 128
+    num_classes: 40
   edges:
-    type: DEVICE_MEMORY
-    options:
-      dtype: int
+    type: FLAT_FILE
+  nodes:
+    type: HOST_MEMORY
   features:
-    type: DEVICE_MEMORY
+    type: PARTITION_BUFFER
     options:
-      dtype: float
+      num_partitions: 32
+      buffer_capacity: 3
+      prefetching: true
+      fine_to_coarse_ratio: 1
+      num_cache_partitions: 0
+      node_partition_ordering: DISPERSED
+  prefetch: true
+  shuffle_input: true
+  full_graph_evaluation: false
+  train_edges_pre_sorted: false
 training:
   batch_size: 1000
   num_epochs: 10
   pipeline:
     sync: true
+  epochs_per_shuffle: 1
+  logs_per_epoch: 2
 evaluation:
   batch_size: 1000
   pipeline:
     sync: true
+  epochs_per_eval: 1

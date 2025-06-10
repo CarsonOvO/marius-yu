@@ -493,6 +493,27 @@ InMemory::InMemory(string filename, int64_t dim0_size, int64_t dim1_size, torch:
     initialized_ = true;
     loaded_ = false;
     device_ = device;
+
+    // === Begin: Load data from file ===
+    int64_t dtype_size = get_dtype_size_wrapper(dtype_);
+    int64_t total_size = dim0_size_ * dim1_size_ * dtype_size;
+
+    std::ifstream infile(filename_, std::ios::binary);
+    if (!infile.is_open()) {
+        SPDLOG_ERROR("Failed to open InMemory file: {}", filename_);
+        return;
+    }
+
+    std::vector<char> buffer(total_size);
+    infile.read(buffer.data(), total_size);
+    infile.close();
+
+    torch::TensorOptions options = torch::TensorOptions().dtype(dtype_).device(torch::kCPU);
+    data_ = torch::from_blob(buffer.data(), {dim0_size_, dim1_size_}, options).clone();  // clone to detach from buffer
+    loaded_ = true;
+
+    SPDLOG_INFO("InMemory:: Loaded tensor from {} with shape: {} x {}", filename_, dim0_size_, dim1_size_);
+    // === End ===
 }
 
 InMemory::InMemory(string filename, torch::Tensor data, torch::Device device) {
@@ -604,12 +625,27 @@ void InMemory::unload(bool perform_write) {
 }
 
 torch::Tensor InMemory::indexRead(Indices indices) {
+    // SPDLOG_INFO("TEST STORAGE: InMemory::indexRead");
     if (indices.sizes().size() != 1) {
         // TODO: throw invalid input to func exception
-        throw std::runtime_error("");
+        throw std::runtime_error("indexRead: indices must be 1D");
     }
 
     if (data_.defined()) {
+        if (indices.numel() == 0) {
+            SPDLOG_ERROR(">> storage.cpp: indices is empty, cannot perform .max()");
+            throw std::runtime_error("Empty indices passed to .max()");
+        }
+        int64_t max_index = indices.max().item<int64_t>();
+
+        int64_t min_index = indices.min().item<int64_t>();
+        if (max_index >= data_.size(0) || min_index < 0) {
+            SPDLOG_INFO("[indexRead] data_.size(0) = {}", data_.size(0));
+            SPDLOG_ERROR("[indexRead] Invalid index range. Min: {}, Max: {}, Feature rows: {}",
+                         min_index, max_index, data_.size(0));
+            throw std::out_of_range("indexRead: one or more indices are out of bounds.");
+        }
+
         if (data_.device().is_cuda()) {
             return data_.index_select(0, indices.to(device_));
         } else {
