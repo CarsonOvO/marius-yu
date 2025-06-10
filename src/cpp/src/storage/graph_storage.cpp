@@ -337,7 +337,7 @@ torch::Tensor GraphModelStorage::getNodeFeatures(Indices indices) {
     // ===================== 1. Cache-based branch ===========================
     if (cached_critical_features_.defined() && critical_node_ids_.defined()) {
         // Create mask: which indices are critical
-        SPDLOG_INFO(">> [CACHE HIT] Using cached critical features on GPU.");
+        // SPDLOG_INFO(">> [CACHE HIT] Using cached critical features on GPU.");
         indices = indices.to(torch::kCUDA);
 
         auto expanded = indices.unsqueeze(1); // [N, 1]
@@ -380,7 +380,7 @@ torch::Tensor GraphModelStorage::getNodeFeatures(Indices indices) {
             }
         }
 
-        SPDLOG_INFO(">> [Cache] GPU cached hit: {} / {} ({:.2f}%)", ci, indices.size(0), 100.0 * ci / indices.size(0));
+        // SPDLOG_INFO(">> [Cache] GPU cached hit: {} / {} ({:.2f}%)", ci, indices.size(0), 100.0 * ci / indices.size(0));
         return full_features;
     }
 
