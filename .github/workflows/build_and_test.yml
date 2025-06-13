@@ -1,0 +1,56 @@
+name: Build and Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    name: ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+        - {
+            name: "Ubuntu 20.04 GCC", artifact: "Linux.7z",
+            os: ubuntu-20.04,
+            cc: "gcc", cxx: "g++"
+          }
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install dependencies
+      working-directory: ${{github.workspace}}
+      shell: bash
+      run:   |
+        
+        python3 --version
+      
+        sudo python3 -m pip install pyarrow
+
+        if [ "$RUNNER_OS" == "Linux" ]; then
+             sudo pip3 install torch --extra-index-url https://download.pytorch.org/whl/cpu
+        else
+             echo "$RUNNER_OS not supported"
+             exit 1
+        fi
+      
+    - name: Install Marius
+      working-directory: ${{github.workspace}}
+      shell: bash
+      run: |
+        sudo pip3 install .[tests] --verbose
+        marius_env_info
+
+    - name: Run Tests
+      working-directory: ${{github.workspace}}
+      shell: bash
+      run: OMP_NUM_THREADS=1 MARIUS_TEST_HOME=test/ python3 -m pytest test/python --verbose
+

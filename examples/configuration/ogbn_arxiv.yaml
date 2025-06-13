@@ -1,0 +1,70 @@
+model:
+  learning_task: NODE_CLASSIFICATION
+  encoder:
+    train_neighbor_sampling:
+      - type: ALL
+      - type: ALL
+      - type: ALL
+    layers:
+      - - type: FEATURE
+          output_dim: 128
+          bias: true
+      - - type: GNN
+          options:
+            type: GRAPH_SAGE
+            aggregator: MEAN
+          input_dim: 128
+          output_dim: 128
+          bias: true
+      - - type: GNN
+          options:
+            type: GRAPH_SAGE
+            aggregator: MEAN
+          input_dim: 128
+          output_dim: 128
+          bias: true
+      - - type: GNN
+          options:
+            type: GRAPH_SAGE
+            aggregator: MEAN
+          input_dim: 128
+          output_dim: 40
+          bias: true
+  decoder:
+    type: NODE
+  loss:
+    type: CROSS_ENTROPY
+    options:
+      reduction: SUM
+  dense_optimizer:
+    type: ADAM
+    options:
+      learning_rate: 0.01
+storage:
+  device_type: cuda
+  dataset: 
+    dataset_dir: datasets/ogbn_arxiv/
+  edges:
+    type: DEVICE_MEMORY
+    options:
+      dtype: int
+  features:
+    type: DEVICE_MEMORY
+    options:
+      dtype: float
+  nodes:
+    type: DEVICE_MEMORY
+  node_embeddings:
+    type: partition_buffer
+    embedding_dim: 128
+    initialize_all: true
+training:
+  batch_size: 1000
+  num_epochs: 10
+  pipeline:
+    sync: false
+  logs_per_epoch: 1
+evaluation:
+  batch_size: 1000
+  pipeline:
+    sync: true
