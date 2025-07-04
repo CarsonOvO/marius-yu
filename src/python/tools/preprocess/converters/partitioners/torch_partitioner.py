@@ -1,8 +1,9 @@
 import numpy as np
-
-from marius.tools.preprocess.converters.partitioners.partitioner import Partitioner
+from pathlib import Path
+import os
 
 import torch  # isort:skip
+from marius.tools.preprocess.converters.partitioners.partitioner import Partitioner
 
 
 def dataframe_to_tensor(df):
@@ -37,19 +38,38 @@ def partition_edges(edges, num_nodes, num_partitions, edge_weights=None):
             dst_ids = edge_bucket_ids[offset : offset + num_edges, -1]
 
             unique_dst, num_dst = torch.unique_consecutive(dst_ids, return_counts=True)
-
             offsets[i][unique_dst] = num_dst
             curr_src_unique += 1
 
     offsets = list(offsets.flatten())
-
     return edges, offsets, edge_weights
 
 
+# === ✅ 新增函数：保存 Critical Nodes ===
+def select_and_save_critical_nodes(train_edges_tens, num_nodes):
+    CRITICAL_NODE_PERCENTILE = 0.02  # 取频率最高的前 2%
+    CRITICAL_NODE_UPPER_BOUND = num_nodes  # 可设置为实际最大节点编号
+    CRITICAL_NODE_SAVE_PATH = "datasets/ogbn_arxiv/nodes/critical_nodes.bin"
+
+    # 统计出现频率（无向图：源和目的都计入）
+    all_nodes = torch.cat([train_edges_tens[:, 0], train_edges_tens[:, 1]])
+    node_freq = torch.bincount(all_nodes, minlength=num_nodes)
+
+    # Top-k 高频节点
+    num_critical = int(num_nodes * CRITICAL_NODE_PERCENTILE)
+    _, topk_indices = torch.topk(node_freq, num_critical, largest=True, sorted=False)
+    critical_nodes = topk_indices[topk_indices < CRITICAL_NODE_UPPER_BOUND]
+
+    # 保存为 .bin 文件
+    Path(os.path.dirname(CRITICAL_NODE_SAVE_PATH)).mkdir(parents=True, exist_ok=True)
+    critical_nodes.to(torch.int64).numpy().tofile(CRITICAL_NODE_SAVE_PATH)
+    print(f">>> Saved {len(critical_nodes)} critical nodes to {CRITICAL_NODE_SAVE_PATH}")
+
+
+# === 原始类结构，加入保存逻辑 ===
 class TorchPartitioner(Partitioner):
     def __init__(self, partitioned_evaluation):
         super().__init__()
-
         self.partitioned_evaluation = partitioned_evaluation
 
     def partition_edges(
@@ -67,6 +87,9 @@ class TorchPartitioner(Partitioner):
         train_edges_tens, train_offsets, train_edge_weights = partition_edges(
             train_edges_tens, num_nodes, num_partitions, edge_weights=train_edge_weights
         )
+
+        # ✅ 保存 critical 节点
+        select_and_save_critical_nodes(train_edges_tens, num_nodes)
 
         valid_offsets = None
         test_offsets = None

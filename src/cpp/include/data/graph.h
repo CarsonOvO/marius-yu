@@ -15,6 +15,8 @@
  */
 class MariusGraph {
    public:
+    
+    double totaNeighborSampleTime = 0.0;
     EdgeList src_sorted_edges_;           // easy access of outgoing neighbors
     EdgeList dst_sorted_edges_;           // easy access of incoming neighbors
     EdgeList active_in_memory_subgraph_;  // shuffled
@@ -100,6 +102,8 @@ class MariusGraph {
     void to(torch::Device device);
 
     void sortAllEdges(EdgeList additional_edges);
+
+    void printTimingStatistics2();
 };
 
 /**

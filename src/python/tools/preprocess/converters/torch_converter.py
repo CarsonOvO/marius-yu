@@ -180,7 +180,11 @@ def extract_tensor_from_tens(edges_tensor, column_mappings):
     if column_mappings[ColNames.EDGE_TYPE_COL] is not None:
         cols_to_keep.insert(len(cols_to_keep) - 1, column_mappings[ColNames.EDGE_TYPE_COL])
 
-    converted_tensor = edges_tensor[:, cols_to_keep]
+    if edges_tensor.shape[1] > max(cols_to_keep):
+        converted_tensor = edges_tensor[:, cols_to_keep]
+    else:
+        # Likely missing relation type column; just take src and dst
+        converted_tensor = edges_tensor[:, :2]
     converted_weights = None
     if edge_weights_column is not None:
         converted_weights = edges_tensor[:, edge_weights_column]

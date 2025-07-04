@@ -1,0 +1,98 @@
+model:
+  learning_task: NODE_CLASSIFICATION
+  encoder:
+    use_incoming_nbrs: true
+    use_outgoing_nbrs: true
+    train_neighbor_sampling:
+      - type: UNIFORM
+        options:
+          max_neighbors: 15
+      - type: UNIFORM
+        options:
+          max_neighbors: 10
+      - type: UNIFORM
+        options:
+          max_neighbors: 5
+    eval_neighbor_sampling:
+      - type: UNIFORM
+        options:
+          max_neighbors: 15
+      - type: UNIFORM
+        options:
+          max_neighbors: 10
+      - type: UNIFORM
+        options:
+          max_neighbors: 5
+    layers:
+      - - type: FEATURE
+          output_dim: 100
+          bias: false
+          activation: NONE
+      - - type: GNN
+          options:
+            type: GRAPH_SAGE
+            aggregator: MEAN
+          input_dim: 100
+          output_dim: 100
+          bias: true
+          activation: RELU
+      - - type: GNN
+          options:
+            type: GRAPH_SAGE
+            aggregator: MEAN
+          input_dim: 100
+          output_dim: 100
+          bias: true
+          activation: RELU
+      - - type: GNN
+          options:
+            type: GRAPH_SAGE
+            aggregator: MEAN
+          input_dim: 100
+          output_dim: 47
+          bias: true
+          activation: NONE
+  decoder:
+    type: NODE
+  loss:
+    type: CROSS_ENTROPY
+    options:
+      reduction: MEAN
+  dense_optimizer:
+    type: ADAM
+    options:
+      learning_rate: 0.003
+
+storage:
+  device_type: cuda
+  dataset:
+    dataset_dir: datasets/ogbn_products
+    num_nodes: 2449029
+    num_edges: 61859140
+    num_relations: 1
+    num_train: 196615
+    num_valid: 39323
+    num_test: 2213091
+    node_feature_dim: 100
+    rel_feature_dim: -1
+    num_classes: 47
+  edges:
+    type: FLAT_FILE
+  nodes:
+    type: HOST_MEMORY
+  features:
+    type: DEVICE_MEMORY
+
+training:
+  batch_size: 1024
+  num_epochs: 20
+  pipeline:
+    sync: true
+  epochs_per_shuffle: 1
+  logs_per_epoch: 1
+
+evaluation:
+  batch_size: 2048
+  pipeline:
+    sync: true
+  epochs_per_eval: 1

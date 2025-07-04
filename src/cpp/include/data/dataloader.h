@@ -21,6 +21,13 @@
 
 class DataLoader {
    public:
+   //***
+    double totalStorage2HostTime = 0.0;
+    double totalHost2DeviceTime = 0.0;
+    double totalNegativeSampleTime = 0.0;
+    double totalLoadStorageFunctionTime = 0.0;
+    double totalSetBufferOrdering = 0.0;
+   //***
     bool train_;
     int epochs_processed_;
     int64_t batches_processed_;
@@ -95,6 +102,12 @@ class DataLoader {
      * @return True if batch exists, false if not
      */
     bool hasNextBatch();
+
+    //***
+    void resetTimers();
+    void printTimingStatistics();
+    //***
+
 
     shared_ptr<Batch> getNextBatch();
 

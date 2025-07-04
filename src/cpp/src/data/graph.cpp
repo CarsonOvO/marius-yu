@@ -7,6 +7,10 @@
 #include "common/util.h"
 #include "data/samplers/neighbor.h"
 
+#include <chrono>
+
+#include <fstream>
+
 #ifdef MARIUS_OMP
     #include "omp.h"
 #endif
@@ -200,7 +204,7 @@ std::tuple<torch::Tensor, torch::Tensor> MariusGraph::getNeighborsForNodeIds(tor
         edges = src_sorted_edges_;
         max_id = max_out_num_neighbors_;
     }
-
+    auto start = std::chrono::high_resolution_clock::now();
     switch (neighbor_sampling_layer) {
         case NeighborSamplingLayer::ALL: {
             if (gpu) {
@@ -227,7 +231,31 @@ std::tuple<torch::Tensor, torch::Tensor> MariusGraph::getNeighborsForNodeIds(tor
             break;
         }
     }
+
+    auto end = std::chrono::high_resolution_clock::now();
+
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    totaNeighborSampleTime += elapsed.count();  // Accumulate time
+
+    std::ofstream out_file("NeighborSampleTime.txt", std::ios::app); // Open in append mode
+    if (out_file.is_open()) {
+        std::string output_string1 = std::to_string(elapsed.count());
+        out_file << output_string1 << std::endl;
+        out_file.close(); // Close the file to flush and release the resource
+    } else {
+        std::cerr << "Failed to open NeighborSampleTime.txt for writing.\n";
+    }
+
     return ret;
+}
+
+void MariusGraph::printTimingStatistics2() {
+
+    std::string output_string1 = "Total Neighbor Sample time this epoch: " + std::to_string(totaNeighborSampleTime) + " ms";
+    std::cout<< output_string1 << std::endl;
+
+    totaNeighborSampleTime = 0.0;
+
 }
 
 void MariusGraph::sortAllEdges(EdgeList all_edges) {

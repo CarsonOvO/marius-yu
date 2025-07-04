@@ -57,6 +57,10 @@ class GraphModelStorage {
 
    public:
     // In memory subgraph for partition buffer
+    torch::Tensor critical_node_embeddings_;
+    torch::Tensor critical_node_ids_;
+    torch::Tensor critical_id_to_index_;
+    torch::Tensor cached_critical_features_;
 
     EdgeList active_edges_;
     Indices active_nodes_;

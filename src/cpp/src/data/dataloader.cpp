@@ -7,6 +7,10 @@
 #include "common/util.h"
 #include "data/ordering.h"
 
+//***
+#include <chrono>
+//***
+
 DataLoader::DataLoader(shared_ptr<GraphModelStorage> graph_storage, LearningTask learning_task, shared_ptr<TrainingConfig> training_config,
                        shared_ptr<EvaluationConfig> evaluation_config, shared_ptr<EncoderConfig> encoder_config) {
     current_edge_ = 0;
@@ -118,6 +122,8 @@ void DataLoader::nextEpoch() {
 }
 
 void DataLoader::setActiveEdges() {
+    auto start = std::chrono::high_resolution_clock::now();  
+
     EdgeList active_edges;
 
     if (graph_storage_->useInMemorySubGraph()) {
@@ -176,6 +182,13 @@ void DataLoader::setActiveEdges() {
     } else {
         active_edges = graph_storage_->storage_ptrs_.edges->range(0, graph_storage_->storage_ptrs_.edges->getDim0());
     }
+    
+    auto end = std::chrono::high_resolution_clock::now();  // End timing
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    //std::cout << "Time taken for Storage to Host in setActiveEdges(): " << elapsed.count() << " ms" << std::endl;
+    //std::string output_string = "Time taken for Storage to Host in setActiveEdges(): " + std::to_string(elapsed.count())+ " ms";
+    //std::cout<< output_string << std::endl;
+
 
     auto opts = torch::TensorOptions().dtype(torch::kInt64).device(active_edges.device());
     active_edges = (active_edges.index_select(0, torch::randperm(active_edges.size(0), opts)));
@@ -183,6 +196,7 @@ void DataLoader::setActiveEdges() {
 }
 
 void DataLoader::setActiveNodes() {
+    auto start = std::chrono::high_resolution_clock::now();
     torch::Tensor node_ids;
 
     if (graph_storage_->useInMemorySubGraph()) {
@@ -197,9 +211,15 @@ void DataLoader::setActiveNodes() {
     auto opts = torch::TensorOptions().dtype(torch::kInt64).device(node_ids.device());
     node_ids = (node_ids.index_select(0, torch::randperm(node_ids.size(0), opts)));
     graph_storage_->setActiveNodes(node_ids);
+    auto end = std::chrono::high_resolution_clock::now();  // End timing
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    //std::cout << "Time taken for Storage to Host in setActiveNodes(): " << elapsed.count() << " ms" << std::endl;
+    //std::string output_string = "Time taken for Storage to Host in setActiveNodes(): " + std::to_string(elapsed.count())+ " ms";
+    //std::cout<< output_string << std::endl;
 }
 
 void DataLoader::initializeBatches(bool prepare_encode) {
+    auto start = std::chrono::high_resolution_clock::now();
     int64_t batch_id = 0;
     int64_t start_idx = 0;
 
@@ -245,9 +265,17 @@ void DataLoader::initializeBatches(bool prepare_encode) {
 
     batches_left_ = batches_.size();
     batch_iterator_ = batches_.begin();
+
+    auto end = std::chrono::high_resolution_clock::now();  // End timing
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    //std::cout << "Time taken for Storage to Host in initialize the batch: " << elapsed.count() << " ms" << std::endl;
+    //std::string output_string = "Time taken for Storage to Host in initialize the batch: " + std::to_string(elapsed.count())+ " ms";
+    //std::cout<< output_string << std::endl;
+    
 }
 
 void DataLoader::setBufferOrdering() {
+    auto start_time = std::chrono::high_resolution_clock::now();
     shared_ptr<PartitionBufferOptions> options;
 
     if (instance_of<Storage, PartitionBufferStorage>(graph_storage_->storage_ptrs_.node_embeddings)) {
@@ -282,6 +310,13 @@ void DataLoader::setBufferOrdering() {
             graph_storage_->setBufferOrdering(buffer_states_);
         }
     }
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+    totalSetBufferOrdering += elapsed.count();
+    //std::cout << "Time taken for set buffer ordering: " << elapsed.count() << " ms" << std::endl;
+    //std::string output_string = "Time taken for set buffer ordering: " + std::to_string(elapsed.count())+ " ms";
+    //std::cout<< output_string << std::endl;
 }
 
 void DataLoader::clearBatches() { batches_ = std::vector<shared_ptr<Batch>>(); }
@@ -503,30 +538,58 @@ void DataLoader::negativeSample(shared_ptr<Batch> batch) {
 }
 
 void DataLoader::loadCPUParameters(shared_ptr<Batch> batch) {
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    // --- embeddings ---
     if (graph_storage_->storage_ptrs_.node_embeddings != nullptr) {
         if (graph_storage_->storage_ptrs_.node_embeddings->device_ != torch::kCUDA) {
-            batch->node_embeddings_ = graph_storage_->getNodeEmbeddings(batch->unique_node_indices_);
+            auto embeddings = graph_storage_->getNodeEmbeddings(batch->unique_node_indices_);
+            // pin only if on CPU
+            if (embeddings.device().is_cpu()) {
+                batch->node_embeddings_ = embeddings.pin_memory();
+            } else {
+                batch->node_embeddings_ = embeddings;
+            }
+
             if (train_) {
-                batch->node_embeddings_state_ = graph_storage_->getNodeEmbeddingState(batch->unique_node_indices_);
+                auto emb_state = graph_storage_->getNodeEmbeddingState(batch->unique_node_indices_);
+                if (emb_state.device().is_cpu()) {
+                    batch->node_embeddings_state_ = emb_state.pin_memory();
+                } else {
+                    batch->node_embeddings_state_ = emb_state;
+                }
             }
         }
     }
 
+    // --- features ---
     if (graph_storage_->storage_ptrs_.node_features != nullptr) {
         if (graph_storage_->storage_ptrs_.node_features->device_ != torch::kCUDA) {
+            torch::Tensor node_feats;
             if (only_root_features_) {
-                batch->node_features_ = graph_storage_->getNodeFeatures(batch->root_node_indices_);
+                node_feats = graph_storage_->getNodeFeatures(batch->root_node_indices_);
             } else {
-                batch->node_features_ = graph_storage_->getNodeFeatures(batch->unique_node_indices_);
+                node_feats = graph_storage_->getNodeFeatures(batch->unique_node_indices_);
+            }
+
+            if (node_feats.device().is_cpu()) {
+                batch->node_features_ = node_feats.pin_memory();
+            } else {
+                batch->node_features_ = node_feats;
             }
         }
     }
 
     batch->status_ = BatchStatus::LoadedEmbeddings;
     batch->load_timestamp_ = timestamp_;
+    auto end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end_time - start_time;
+    totalStorage2HostTime += elapsed.count();
 }
 
+
 void DataLoader::loadGPUParameters(shared_ptr<Batch> batch) {
+    auto start = std::chrono::high_resolution_clock::now();
     if (graph_storage_->storage_ptrs_.node_embeddings != nullptr) {
         if (graph_storage_->storage_ptrs_.node_embeddings->device_ == torch::kCUDA) {
             batch->node_embeddings_ = graph_storage_->getNodeEmbeddings(batch->unique_node_indices_);
@@ -545,6 +608,10 @@ void DataLoader::loadGPUParameters(shared_ptr<Batch> batch) {
             }
         }
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    totalHost2DeviceTime += elapsed.count();  // Accumulate time
+    //std::cout << "Host2Device time for load GPU Parameters: " << elapsed.count() << " ms" << std::endl;
 }
 
 void DataLoader::updateEmbeddings(shared_ptr<Batch> batch, bool gpu) {
@@ -564,6 +631,8 @@ void DataLoader::updateEmbeddings(shared_ptr<Batch> batch, bool gpu) {
 }
 
 void DataLoader::loadStorage() {
+    auto start = std::chrono::high_resolution_clock::now();  // Start the timer
+
     setBufferOrdering();
     graph_storage_->load();
 
@@ -596,4 +665,40 @@ void DataLoader::loadStorage() {
             }
         }
     }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    //std::cout << "Time taken for Storage to Host in load Storage function:" << elapsed.count() << " ms" << std::endl;
+    std::string output_string = "Time for load Storage function:" + std::to_string(elapsed.count())+ " ms";
+    std::cout<< output_string << std::endl;
+    totalLoadStorageFunctionTime += elapsed.count();  // Accumulate time
+}
+
+
+void DataLoader::resetTimers() {
+    totalStorage2HostTime = 0.0;
+    totalHost2DeviceTime = 0.0;
+    totalNegativeSampleTime = 0.0;
+    totalLoadStorageFunctionTime = 0.0;
+    totalSetBufferOrdering = 0.0;
+}
+
+void DataLoader::printTimingStatistics() {
+
+    //std::cout << "Total Storage2Host time this epoch: " << totalStorage2HostTime << " ms" << std::endl;
+    std::string output_string1 = "Total Storage2Host time this epoch: " + std::to_string(totalStorage2HostTime) + " ms";
+    std::cout<< output_string1 << std::endl;
+    //std::cout << "Total Host2Device time this epoch: " << totalHost2DeviceTime << " ms" << std::endl;
+    std::string output_string2 = "Total Host2Device time this epoch: " + std::to_string(totalHost2DeviceTime) + " ms";
+    std::cout<< output_string2 << std::endl;
+        
+    std::string output_string3 = "Total Negative Sample time: " + std::to_string(totalNegativeSampleTime) + " ms";
+    std::cout<< output_string3 << std::endl;
+
+    std::string output_string4 = "Total load Storage function: " + std::to_string(totalLoadStorageFunctionTime) + " ms";
+    std::cout<< output_string4 << std::endl;
+
+    std::string output_string5 = "Total Set Buffer Ordering function: " + std::to_string(totalSetBufferOrdering) + " ms";
+    std::cout<< output_string5 << std::endl;
+
 }

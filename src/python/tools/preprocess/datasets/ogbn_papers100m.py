@@ -84,7 +84,7 @@ class OGBNPapers100M(NodeClassificationDataset):
             partitioned_evaluation=partitioned_eval,
             src_column=0,
             dst_column=2,
-            edge_type_column=1,
+            edge_type_column=None,
         )
 
         dataset_stats = converter.convert()
