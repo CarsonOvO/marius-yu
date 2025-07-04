@@ -72,7 +72,7 @@ storage:
       prefetching: true
   prefetch: true
   shuffle_input: true
-  full_graph_evaluation: true
+  full_graph_evaluation: false
 training:
   batch_size: 1000
   num_epochs: 20
